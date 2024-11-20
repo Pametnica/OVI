@@ -1,0 +1,79 @@
+Разгледуваме роботска платформа од 16 плочки, распоредени како матрица 4х4. 
+Вашата работна група треба под секоја плочка треба да намести сензор за детекција на објектите кои ќе бидат поставувани врз плочките. 
+Ако се постави сензор под секоја плочка, се јавува проблем и сензорите не работат како што треба. 
+По одредено истражување, вашата работна група сватила дека проблемот се јавува кога ќе има два сензори во ист ред, или пак два сензори во иста колона. 
+Исто така вашата група открила дека два исти сензори, но од различен производител, не си пречат еден на друг кога ќе се во ист ред или колона. 
+Пред да потрошете пари за нови сензори, треба да се реши проблемот: Под која плочка каков сензор да се постави?. 
+Моментално располагате со неограничен број сензори од 4 различни производители, A, B, C, и D.
+
+state=(
+    (0,0,0,0),
+    (0,1,0,0),
+    (0,0,0,0),
+    (0,0,0,0)
+)
+
+ddef is_valid(state,value,poz): #value e senzorot za koj baram dali e na taa redica i taa kolona
+    p_i,p_j=poz # kade sto sakam da go postavam senzorot
+    if value in state[p_i]:
+        return False
+
+    valid=True
+    for i in range(len(state)):
+        if state[i][p_j]==value:
+            valid=False
+            break
+
+    return valid
+
+def add_sensor(state,br_senzor,poz):
+    p_i,p_j=poz #pozicijata kade sto ke go dodadam senzorot
+    states=[]
+    for row in state:
+        states.append(list(row))
+    #if state[p_i][p_j]==0:
+    states[p_i][p_j]=br_senzor
+
+    tupp=[]
+    for row in states:
+        tupp.append(tuple(row))
+
+    return tuple(tupp)
+
+def expand_state(state):
+    states=[]
+    senzori=[1,2,3,4]
+    # mi treba lista od redici kade gi ima odredenite senzori
+    # na pr senzor 1 go ima vo redica 2,3
+   # za senzor 1
+    for i, row in enumerate(state):
+        for j, col in enumerate(row):
+            if col==0:
+                for k in range(len(senzori)):
+                    if is_valid(state,senzori[k],(i,j)):
+                        states.append(add_sensor(state,senzori[k],(i,j)))
+
+    return states
+
+from collections import deque
+def depth_first_search(initial_state):
+    
+    queue = deque([initial_state])
+    visited = {initial_state}
+    
+    while queue:
+        state_to_expand = queue.popleft()
+        #state_to_expand = list_to_expand[-1]
+        
+        for next_state in expand_state(state_to_expand):
+            if next_state not in visited:
+                how_many_zeroes = 0
+                for row in next_state:
+                    how_many_zeroes += row.count(0)
+                
+                if how_many_zeroes == 0: # ako ne preotanale nuli vo state t.e. site polinja se popolnati so senzor
+                    return next_state # togas zavrsilo prebaruvanjeto, kako rezultat vrati ja poslednata razgraneta sostojba
+                queue.appendleft(next_state)
+                visited.add(next_state)
+
+result_state = depth_first_search(state)
