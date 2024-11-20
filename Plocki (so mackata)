@@ -1,0 +1,84 @@
+state = ((0, 5, 3),
+         (7, 8, 4),
+         (2, 6, 1))
+
+goal_state = ((0, 1, 2),
+              (3, 4, 5),
+              (6, 7, 8))
+
+def move(state,tile_poz,zero_poz):
+    states=[]
+    tile_i,tile_j=tile_poz
+    zero_i,zero_j=zero_poz
+    for row in state:
+        states.append(list(row))
+    states[tile_i][tile_j]=state[zero_i][zero_j]
+    states[zero_i][zero_j]=state[tile_i][tile_j]
+
+    tupp=[]
+    for row in states:
+        tupp.append(tuple(row))
+    return tuple(tupp)
+
+def expand_state(state):
+    new_state=[]
+    #gi baram koordinatite na nulata i gi zacuvuvam vo koordinati
+    for i,row in enumerate(state):
+        if 0 in row:
+            koordinati=(i,row.index(0))
+            break
+    zero_x,zero_y=koordinati
+    deltas=[(zero_x+1,zero_y),(zero_x-1,zero_y),(zero_x,zero_y+1),(zero_x,zero_y-1)] #ja dvizam nulata
+    tile_poz=[]
+    for tile_i, row in enumerate(state):
+        for tile_j, value in enumerate(row):
+            tile_poz=(tile_i,tile_j)
+
+            if tile_poz in deltas:
+                new_state.append((1,tuple(move(state,tile_poz,koordinati))))
+
+    return new_state
+
+goal_positions = {
+    0: (0, 0), 1: (0, 1), 2: (0, 2),
+    3: (1, 0), 4: (1, 1), 5: (1, 2),
+    6: (2, 0), 7: (2, 1), 8: (2, 2)
+}
+#fakticki si pravi goal mnozestvo i go zima kako krajno sto treba da dobie
+def manhattan_distance(current_position, number): #number e brojot na koj mu barame heuristic
+    return abs(current_position[0] - goal_positions[number][0]) + abs(current_position[1] - goal_positions[number][1])  
+#goal_positions[number][0] - number i brojot na koj so mu barame, a posle toa e redicata
+
+def heuristics(state): #go sobiram vkupoto rastojanie, odnosno kolku kemu treba za da ja dostigne celta
+    value = 0
+    for index_row, row in enumerate(state):
+        for index_col, col in enumerate(row):
+            value += manhattan_distance((index_row, index_col), col)
+    return value
+
+import heapq
+
+def a_star_search(initial_state, goal_state):
+    # sekoe dvizenje ima cena 1
+    
+    queue = [((0, 0), [initial_state])]
+    heapq.heapify(queue)
+    expanded = set()
+    
+    while queue:
+        current_weight_tuple, list_to_expand = heapq.heappop(queue)
+        current_a_star_weight, current_weight = current_weight_tuple
+        state_to_expand = list_to_expand[-1]
+        
+        if state_to_expand == goal_state:
+            return current_weight, list_to_expand
+        
+        if state_to_expand not in expanded:
+            for weight, next_state in expand_state(state_to_expand):
+                if next_state not in expanded:
+                    next_weight = current_weight + weight
+                    next_a_star_weight = next_weight + heuristics(next_state)
+                    heapq.heappush(queue, ((next_a_star_weight, next_weight), list_to_expand + [next_state]))
+            expanded.add(state_to_expand)
+
+a_star_search(state, goal_state)
