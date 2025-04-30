@@ -1,0 +1,74 @@
+/*
+ * Изменет код за задача 5-1 (тргнато Delay_ms, бројот се менува секои 3 секунди со Timer0 interrupt)
+ */
+#include "Display_Utils.h"
+
+unsigned short shifter, portd_index;
+unsigned int   digit, number;
+unsigned short portd_array[4];
+unsigned int second_counter = 0; // брои ms за да се детектира 3 сек.
+
+void interrupt() {
+  if (TMR0IF_bit) {
+    LATA = 0;                           // Исклучи сите дисплеи
+    LATD = portd_array[portd_index];   // Постави бројка на PORTD
+    LATA = shifter;                    // Активирај соодветен дисплеј
+
+    shifter <<= 1;
+    if (shifter > 8u)
+      shifter = 1;
+
+    portd_index++;
+    if (portd_index > 3u)
+      portd_index = 0;
+
+    TMR0L  = 0;
+    TMR0IF_bit = 0;
+
+    // брои до 3000ms (со прекини на секои 1ms)
+    second_counter++;
+    if (second_counter >= 3000) {
+      number++;
+      if (number > 9999u) number = 0;
+      second_counter = 0;
+    }
+  }
+}
+
+void update_display() {
+  digit = number / 1000u;
+  portd_array[3] = mask(digit);
+  digit = (number / 100u) % 10u;
+  portd_array[2] = mask(digit);
+  digit = (number / 10u) % 10u;
+  portd_array[1] = mask(digit);
+  digit = number % 10u;
+  portd_array[0] = mask(digit);
+}
+
+void main() {
+  ANSELA = 0;
+  ANSELD = 0;
+
+  TRISA = 0;
+  LATA  = 0;
+  TRISD = 0;
+  LATD  = 0;
+
+  T0CON = 0xC4;  // Timer0, 8bit, prescaler 1:32 (за 1ms интервал)
+  TMR0L = 0;
+
+  digit = 0;
+  portd_index = 0;
+  shifter = 1;
+
+  number = 0;
+  second_counter = 0;
+
+  GIE_bit = 1;
+  TMR0IE_bit = 1;
+
+  while(1) {
+    update_display();  // постојано ажурирај портата за приказ
+  }
+}
