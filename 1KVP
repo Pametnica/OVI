@@ -1,0 +1,110 @@
+/*
+ * Код за задача 5-2
+ */
+#include "Display_Utils.h"
+
+unsigned short shifter, portd_index;
+unsigned int   digit, number = 0;
+unsigned short portd_array[4];
+
+unsigned int blink_counter = 0;
+unsigned int blink_period_ms = 1000;
+bit blinking = 0;
+
+bit led_state = 0;
+
+void interrupt() {
+  if (TMR0IF_bit) {
+    LATA = 0;                           // Исклучи сите дисплеи
+    LATD = portd_array[portd_index];   // Прикажи цифра
+    LATA = shifter;                    // Активирај соодветен дисплеј
+
+    shifter <<= 1;
+    if (shifter > 8u)
+      shifter = 1;
+
+    portd_index++;
+    if (portd_index > 3u)
+      portd_index = 0;
+
+    TMR0L = 0;
+    TMR0IF_bit = 0;
+
+    if (blinking) {
+      blink_counter++;
+      if (blink_counter >= blink_period_ms) {
+        led_state = !led_state;
+        LATE = led_state ? 0xFF : 0x00;
+        blink_counter = 0;
+      }
+    }
+  }
+}
+
+void update_display() {
+  digit = number / 1000u;
+  portd_array[3] = mask(digit);
+  digit = (number / 100u) % 10u;
+  portd_array[2] = mask(digit);
+  digit = (number / 10u) % 10u;
+  portd_array[1] = mask(digit);
+  digit = number % 10u;
+  portd_array[0] = mask(digit);
+}
+
+void debounce_delay() {
+  Delay_ms(200); // едноставен debounce
+}
+
+void main() {
+  ANSELA = 0;
+  ANSELD = 0;
+  ANSELB = 0;
+  ANSELE = 0;
+
+  TRISA = 0;
+  LATA  = 0;
+  TRISD = 0;
+  LATD  = 0;
+
+  TRISB0_bit = 1; // тастер за декрементирање
+  TRISB1_bit = 1; // тастер за инкрементирање
+
+  TRISE = 0;      // диоди
+  LATE = 0;
+
+  T0CON = 0xC4;   // Timer0, 8bit, prescaler 1:32 (~1ms ако е 8MHz)
+  TMR0L = 0;
+
+  shifter = 1;
+  portd_index = 0;
+
+  GIE_bit = 1;
+  TMR0IE_bit = 1;
+
+  while (1) {
+    update_display();
+
+    // Инкрементирање
+    if (PORTB.F1 == 0) {
+      debounce_delay();
+      number++;
+      if (number > 9999u) number = 0;
+    }
+
+    // Декрементирање
+    if (PORTB.F0 == 0) {
+      debounce_delay();
+      if (number > 0) number--;
+    }
+
+    // Проверка дали треба да трепка
+    if (number >= 5) {
+      blinking = 1;
+      blink_period_ms = (number / 5) * 1000; // 5 → 1s, 10 → 2s...
+    } else {
+      blinking = 0;
+      LATE = 0;
+    }
+  }
+}
