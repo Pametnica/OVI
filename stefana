@@ -1,0 +1,321 @@
+rtrigRemote(CLK := i_bRemotebtn);
+rtrigLocal(CLK := i_bLocalbtn);
+rtrigEstop(CLK := i_bEmergencyStopbtn);
+rtrigReset(CLK := i_bReset);
+rtrigLeftOpenLimitSwitch(CLK := i_bLeftOpenLimitSwitch);
+rtrigRightOpenLimitSwitch(CLK := i_bRightOpenLimitSwitch);
+rtrigLeftCloseLimitSwitch(CLK := i_bLeftCloseLimitSwitch);
+rtrigRightCloseLimitSwitch(CLK := i_bRightCloseLimitSwitch);
+IF rtrigEstop.Q THEN
+	PrevState:=state;
+	state:=E_GateState.Error;
+END_IF
+IF rtrigLeftOpenLimitSwitch.Q AND fbMoveToOpen.Execute THEN
+    bLeftOpenLimitSwitchError := TRUE;
+    state := E_GateState.Error;
+END_IF
+IF rtrigRightOpenLimitSwitch.Q AND fbMoveToOpen.Execute THEN
+    bRightOpenLimitSwitchError := TRUE;
+    state := E_GateState.Error;
+END_IF
+IF rtrigLeftCloseLimitSwitch.Q AND fbMoveToClose.Execute THEN
+    bLeftCloseLimitSwitchError := TRUE;
+    state := E_GateState.Error;
+END_IF
+IF rtrigRightCloseLimitSwitch.Q AND fbMoveToClose.Execute THEN
+    bRightCloseLimitSwitchError := TRUE;
+    state := E_GateState.Error;
+END_IF
+
+lrPosMaster := fbActualPosMaster.Position;
+lrPosSlave  := fbActualPosSlave.Position;
+lrDesyncError := ABS(lrPosMaster - lrPosSlave);
+IF lrDesyncError > lrDesyncTolerance THEN
+    tonDesync.IN := TRUE;
+    tonDesync.PT := T#5S; 
+ELSE
+    tonDesync.IN := FALSE;
+END_IF
+IF rtrigReset.Q THEN
+    bResetbtn := TRUE;
+    o_bEstopLamp := FALSE;
+    o_bTimeOutLamp := FALSE;
+END_IF
+
+IF rtrigRemote.Q THEN bRemotebtn := TRUE; END_IF
+IF rtrigLocal.Q THEN bLocabtn := TRUE; END_IF
+
+tAutoCloseTimer := INT_TO_TIME(i_nAutoCloseTimer) * 1000;
+
+CASE state OF
+
+    E_GateState.PowerOn:
+        bPowerEnableMaster := TRUE;
+		bPowerEnableSlave := TRUE;
+		o_sState := 'Power on!';
+        IF fbPowerMaster.Status AND fbPowerSlave.Status THEN
+            IF NOT bGearIn THEN
+                bGearIn := TRUE;
+            END_IF
+            IF bRemotebtn OR bLocabtn  THEN
+                bRemotebtn := FALSE; 
+     			bLocabtn := FALSE;
+				IF (fbActualPosMaster.Position <= 1.0) OR i_bLeftCloseLimitSwitch OR i_bRightCloseLimitSwitch THEN
+					 state := E_GateState.Opening;
+				ELSIF (fbActualPosMaster.Position >= 99.0) OR i_bLeftOpenLimitSwitch OR i_bRightOpenLimitSwitch THEN
+					 state := E_GateState.Closing;
+				ELSE 
+					IF PrevState = E_GateState.Opening THEN
+						state := E_GateState.Closing;
+					ELSE
+						state := E_GateState.Opening;
+					END_IF
+				END_IF
+			END_IF 
+        END_IF
+
+
+    E_GateState.Opening:
+		 bPowerEnableMaster := TRUE;
+   		 bPowerEnableSlave  := TRUE;
+		IF NOT bGearIn THEN bGearIn := TRUE; END_IF
+		fbEstop.Execute := FALSE;
+		o_bClosed := FALSE;
+        tonMotionTimeOut.IN := TRUE;
+		tonMotionTimeOut.PT := T#300S;
+		o_sState := 'Opening';
+        IF fbPowerMaster.Status AND fbPowerSlave.Status THEN
+            bMoveToOpenMaster := TRUE;
+        END_IF
+
+        IF i_bObstacleSensor THEN
+            bMoveToOpenMaster := FALSE;
+            PrevState := E_GateState.Opening;
+            state := E_GateState.Stopped;
+
+        ELSIF fbMoveToOpen.Done OR (i_bLeftOpenLimitSwitch AND i_bRightOpenLimitSwitch) THEN
+            tonMotionTimeOut.IN := FALSE;
+            bMoveToOpenMaster := FALSE;
+            PrevState := E_GateState.Opening;
+            state := E_GateState.Opened;
+
+        ELSIF tonMotionTimeOut.Q THEN
+            tonMotionTimeOut(IN := FALSE);
+            bMoveToOpenMaster := FALSE;
+            state := E_GateState.Error;
+        END_IF
+		
+        IF bRemotebtn OR bLocabtn THEN
+            bMoveToOpenMaster := FALSE;
+            state := E_GateState.Closing;
+            bRemotebtn := FALSE; bLocabtn := FALSE;
+        END_IF
+
+
+	E_GateState.Opened:
+		o_sState := 'The door is opened!';
+		o_bOpened := TRUE;
+	
+		IF i_bAutobtn THEN
+			tonAutoCloseTimer.IN := TRUE;
+			tonAutoCloseTimer.PT := INT_TO_TIME(i_nAutoCloseTimer) * 1000; 
+	
+			IF tonAutoCloseTimer.Q THEN
+				tonAutoCloseTimer.IN := FALSE;
+				state := E_GateState.Closing;
+			END_IF
+		ELSE
+			tonAutoCloseTimer.IN := FALSE;
+		END_IF
+	
+		IF bRemotebtn OR bLocabtn THEN
+			tonAutoCloseTimer.IN := FALSE;
+			bRemotebtn := FALSE; 
+			bLocabtn := FALSE;
+			state := E_GateState.Closing;
+		END_IF
+
+
+
+    E_GateState.Closing:
+		 bPowerEnableMaster := TRUE;
+   		 bPowerEnableSlave  := TRUE;
+		fbEstop.Execute := FALSE;
+		o_bOpened := FALSE;
+        tonMotionTimeOut.IN := TRUE;
+		tonMotionTimeOut.PT := T#300S;
+		o_sState := 'Closing';
+		IF NOT bGearIn THEN bGearIn := TRUE; END_IF
+        IF fbPowerMaster.Status AND fbPowerSlave.Status THEN
+            bMoveToCloseMaster := TRUE;
+        END_IF
+
+        IF i_bObstacleSensor THEN
+            bMoveToCloseMaster := FALSE;
+            PrevState := E_GateState.Closing;
+            state := E_GateState.Stopped;
+
+        ELSIF fbMoveToClose.Done OR (i_bRightCloseLimitSwitch AND i_bLeftCloseLimitSwitch) THEN
+            tonMotionTimeOut.IN := FALSE;
+            bMoveToCloseMaster := FALSE;
+            PrevState := E_GateState.Closing;
+            state := E_GateState.Idle;
+
+        ELSIF tonMotionTimeOut.Q THEN
+            tonMotionTimeOut.IN := FALSE;
+            bMoveToCloseMaster := FALSE;
+            state := E_GateState.Error;
+        END_IF
+
+        IF bRemotebtn OR bLocabtn THEN
+            bMoveToCloseMaster := FALSE;
+            state := E_GateState.Opening;
+            bRemotebtn := FALSE; bLocabtn := FALSE;
+        END_IF
+
+
+
+
+    //  ERROR: Fault state
+	E_GateState.Error:
+		o_bErrorAlarm := TRUE;          
+		fbMoveToOpen.Execute := FALSE;
+		fbMoveToClose.Execute := FALSE;
+		bMoveToOpenMaster := FALSE;
+		bMoveToCloseMaster := FALSE;
+		fbEstop.Execute := TRUE;
+		fbEstop.Deceleration := 30;
+	
+		IF i_bEmergencyStopbtn THEN
+			o_sState := 'Error due to E-STOP';
+			o_bEstopLamp := TRUE;
+		ELSIF tonMotionTimeOut.Q THEN
+			o_sState := 'Error: Motion timeout';
+			o_bTimeOutLamp := TRUE; 
+		ELSIF bLeftOpenLimitSwitchError THEN
+			o_sState := 'Error: Left open limit switch';
+			o_bLeftOpened := TRUE;
+		ELSIF bLeftCloseLimitSwitchError THEN
+			o_sState := 'Error: Left close limit switch';
+			o_bLeftClosed := TRUE;
+		ELSIF bRightOpenLimitSwitchError THEN
+			o_sState := 'Error: Right open limit switch';
+			o_bRightOpened := TRUE;
+		ELSIF bRightCloseLimitSwitchError THEN
+			o_sState := 'Error: Right close limit switch';
+			o_bRightClosed := TRUE;
+		END_IF 
+		
+		IF bResetbtn THEN
+			o_bRightClosed := FALSE;
+			o_bRightOpened := FALSE;
+			o_bLeftOpened := FALSE;
+			o_bLeftClosed := FALSE;
+			o_bEstopLamp := FALSE;
+			o_bTimeOutLamp := FALSE;
+			IF bLeftOpenLimitSwitchError OR bRightOpenLimitSwitchError THEN
+				bLeftOpenLimitSwitchError := FALSE;
+				bRightOpenLimitSwitchError := FALSE;
+				bResetbtn := FALSE;
+				o_bErrorAlarm := FALSE;
+				fbEstop.Execute := FALSE;
+				state := E_GateState.Opened;
+			ELSIF bLeftCloseLimitSwitchError OR bRightCloseLimitSwitchError THEN
+				bLeftCloseLimitSwitchError := FALSE;
+				bRightCloseLimitSwitchError := FALSE;
+				bResetbtn := FALSE;
+				o_bErrorAlarm := FALSE;
+				fbEstop.Execute := FALSE;
+				state := E_GateState.Idle;
+			ELSE
+				bResetbtn := FALSE;
+				o_bErrorAlarm := FALSE;
+				fbEstop.Execute := FALSE;
+				state := PrevState;
+			END_IF
+	   END_IF
+	   
+	// STOPPED: Halt due to obstacle
+	E_GateState.Stopped:
+		o_sState := 'Stopped due to obsticle sensor';
+		fbMoveToOpen.Execute := FALSE;
+		fbMoveToClose.Execute := FALSE;
+		bMoveToOpenMaster := FALSE;
+		bMoveToCloseMaster := FALSE;
+		fbEstop.Execute := TRUE;
+		fbEstop.Deceleration := 15;
+	
+		IF NOT i_bObstacleSensor AND (bRemotebtn OR bLocabtn) THEN
+			fbEstop.Execute := FALSE;
+			bPowerEnableMaster := TRUE;
+			bPowerEnableSlave  := TRUE;
+			bGearIn := TRUE;
+			bRemotebtn := FALSE;
+			bLocabtn   := FALSE;
+			bAutobtn   := FALSE;
+	
+			IF PrevState = E_GateState.Opening THEN
+				state := E_GateState.Opening;
+			ELSIF PrevState = E_GateState.Closing THEN
+				state := E_GateState.Closing;
+			END_IF
+		END_IF
+
+	
+	// IDLE: Gate is fully closed and waiting for command 
+	E_GateState.Idle:
+			o_sState := 'The door is closed';
+			o_bClosed := TRUE;
+			fbMoveToClose.Execute := FALSE;
+			fbMoveToOpen.Execute := FALSE;
+			bPowerEnableMaster := FALSE;
+			tonAutoCloseTimer.IN := FALSE;
+	
+			IF bRemotebtn OR bLocabtn THEN
+				state := E_GateState.PowerOn;
+			END_IF
+
+END_CASE
+
+
+IF bMoveToOpenMaster THEN
+    IF NOT fbMoveToOpen.Execute THEN
+        fbMoveToOpen.Execute := TRUE; 
+    END_IF
+ELSE
+    IF fbMoveToOpen.Done OR fbMoveToOpen.Error THEN
+        fbMoveToOpen.Execute := FALSE;
+    END_IF
+END_IF
+
+IF bMoveToCloseMaster THEN
+    IF NOT fbMoveToClose.Execute THEN
+        fbMoveToClose.Execute := TRUE; 
+    END_IF
+ELSE
+    IF fbMoveToClose.Done OR fbMoveToClose.Error THEN
+        fbMoveToClose.Execute := FALSE;
+    END_IF
+END_IF
+tonDesync();
+IF tonDesync.Q THEN
+    bDesyncDetected := TRUE;
+    o_bDesyncAlarm := TRUE;
+END_IF
+
+
+
+tonMotionTimeOut();
+tonAutoCloseTimer();
+
+fbActualPosMaster(Axis := myAxisMaster, Enable := TRUE);
+fbActualPosSlave(Axis := myAxisSlave, Enable := TRUE);
+
+fbPowerMaster(Axis := myAxisMaster, Enable := bPowerEnableMaster, Enable_Positive := TRUE, Enable_Negative := TRUE);
+fbPowerSlave(Axis := myAxisSlave, Enable := bPowerEnableSlave, Enable_Positive := TRUE, Enable_Negative := TRUE);
+
+
+fbGearIn(Master := myAxisMaster, Slave := myAxisSlave, Execute := bGearIn, RatioNumerator := 1, RatioDenominator := 1);
+fbMoveToOpen(Axis := myAxisMaster, Execute := fbMoveToOpen.Execute, Position := 100.0, Velocity := 10.0, Acceleration := 5.0, Deceleration := 5.0);
+fbMoveToClose(Axis := myAxisMaster, Execute := fbMoveToClose.Execute, Position := 0.0, Velocity := 10.0, Acceleration := 5.0, Deceleration := 5.0);
+fbEstop(Axis := myAxisMaster);
