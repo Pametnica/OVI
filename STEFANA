@@ -1,0 +1,334 @@
+// Detect rising edges for control signals
+rtrigEstop(CLK := i_bEstop);	// (** Detect rising edge of emergency stop signal **)
+rtrigReset(CLK := i_bReset);	// (** Detect rising edge of reset signal **)
+rtirgStop(CLK := i_bStop);	// (** Detect rising edge of stop signal **)
+rtrigEnableWrap(CLK := i_bEnableWrap);	// (** Detect rising edge of enable wrap signal **)
+
+// Handle emergency stop and stop transitions
+IF (rtrigEstop.Q OR i_bEstop) AND (state <> E_WrapMode.WrapError) THEN
+    bEstop := TRUE;		// (** Activate internal emergency stop flag **)
+    state := E_WrapMode.WrapError;		// (** Transition to error state **)
+ELSIF (rtirgStop.Q OR i_bStop) AND (state<>E_WrapMode.WrapStopped) THEN
+	bStop:=TRUE;		 // (** Activate internal stop flag **)
+	state:=E_WrapMode.WrapStopped;		// (** Transition to stopped state **)
+END_IF
+
+// Handle reset signal
+IF rtrigReset.Q THEN
+    bResetbtn := TRUE;		 // (** Set internal reset flag **)
+END_IF
+
+// Handle enable wrap signal
+IF rtrigEnableWrap.Q THEN
+     bEnable := TRUE;		// (** Set internal enable flag **)
+	 state:=E_WrapMode.WrapEnabled;		// (** Transition to enabled state **)
+END_IF
+
+// Main state machine
+CASE state OF 
+	// IDLE state: machine is inactive
+		E_WrapMode.WrapIdle:
+			fbPowerLinear.Enable := FALSE;
+			fbPowerRotational.Enable := FALSE;
+			bGearIn := FALSE;
+			bMovePositive := FALSE;
+			bMoveNegative := FALSE;
+			bEstop := FALSE;
+			bStop := FALSE;
+			bResetbtn := FALSE;
+			tonTimeOutTimer.IN := FALSE;
+			tonGearIntimer.IN := FALSE;
+			o_sMessage := 'Machine is idle. Axes not powered.';
+			IF bEnable THEN
+				bEnable := FALSE;  
+				state := E_WrapMode.WrapEnabled;
+			END_IF
+			
+	// Machine is enabled and preparing to wrap
+	E_WrapMode.WrapEnabled:
+			(* Power on axes and initialize radius and counters *)
+			fbPowerLinear.Enable := TRUE;
+			fbPowerRotational.Enable := TRUE;
+			bEnable:= FALSE;
+			rCurrentRadius := i_rCoreRadiusMm;
+			rPrevAngleRad := 0.0;
+			rConsumedLengthMm := 0.0;
+			IF fbPowerLinear.Status AND fbPowerRotational.Status THEN
+				bGearIn := TRUE;
+				o_sMessage := 'Motorite se spremni za da pocnat so rabota';
+			END_IF
+				// Wrapping by angle mode
+				IF i_bActivateWrapByAngle THEN
+					rAngleRads := (i_rWrapAngleDeg * 3.14159265359) / 180.0;
+					IF ABS(TAN(rAngleRads)) < 1E-6 THEN
+						 (* Invalid angle, transition to error *)
+						o_sMessage := 'Nevaliden agol (tan≈0)';
+						PrevState := state;
+						state := E_WrapMode.WrapError;
+					ELSE
+						 (* Calculate gear ratio and begin forward motion *)
+						fbGearIn.RatioDenominator := REAL_TO_UINT(i_rCoreRadiusMm * TAN(rAngleRads));
+						IF fbGearIn.RatioDenominator = 0 THEN fbGearIn.RatioDenominator := 1; END_IF
+						rCurrentRadius := i_rCoreRadiusMm;
+							 IF fbPowerLinear.Status AND fbPowerRotational.Status THEN
+								bGearIn := TRUE;
+								state:=E_WrapMode.WrapMovingForward;
+							END_IF
+						END_IF
+					END_IF
+					
+		
+		E_WrapMode.WrapMovingForward:
+			o_sMessage:='Winding process in progress. Please wait until completion';
+			fbPowerLinear.Enable := TRUE;
+			fbPowerRotational.Enable := TRUE;
+			IF bEstop OR  i_bRightSwich THEN
+				state:=E_WrapMode.WrapError;
+			ELSIF bStop THEN
+				state:=E_WrapMode.WrapStopped;
+			END_IF
+		
+			IF (rCurrentRadius + i_rTapeThicknessMm) >= i_rMaxRadiusMm OR (rConsumedLengthMm>=i_rMaterialLengthMm)THEN
+				o_sMessage := 'Materijalot e zavrsen!';
+				bMovePositive := FALSE;
+				bMoveNegative := FALSE;
+				tonTimeOutTimer.PT := T#5S;
+				tonTimeOutTimer.IN := TRUE;
+				IF tonTimeOutTimer.Q THEN
+					tonTimeOutTimer.IN := FALSE;
+					state := E_WrapMode.WrapReset; 
+				END_IF
+		
+			ELSE
+				IF NOT fbGearIn.Active THEN
+					IF i_bActivateWrapByAngle THEN
+						rAngleRads :=LREAL_TO_REAL( i_rWrapAngleDeg *PI / 180.0);
+						fbGearIn.RatioNumerator := 1;
+						fbGearIn.RatioDenominator := REAL_TO_UINT(rCurrentRadius * TAN(rAngleRads));
+						IF fbGearIn.RatioDenominator = 0 THEN fbGearIn.RatioDenominator := 1; END_IF
+
+					END_IF
+					bGearIn := TRUE;
+				END_IF
+				
+				deltaAngleRad := fbActualPosRotary.Position - rPrevAngleRad;
+				rStepOverlap := LREAL_TO_REAL(rCurrentRadius * TAN(rAngleRads));
+				rConsumedLengthMm :=ABS( rConsumedLengthMm + rStepOverlap * (deltaAngleRad / (2*PI)));
+				rPrevAngleRad := fbActualPosRotary.Position;
+		
+				IF fbActualPosLinaer.Position >= 850.0 AND fbActualPosLinaer.Position <= 1000.0 THEN
+					vMove := vMin + ((1000.0 - fbActualPosLinaer.Position) / 150.0) * (vMax - vMin);
+				ELSIF   fbActualPosLinaer.Position <= 150.0 AND fbActualPosLinaer.Position >= 0.0 THEN
+						vMove := vMin + ((fbActualPosLinaer.Position) / 150.0) * (vMax - vMin);
+				ELSE
+    					vMove := vMax;
+				END_IF
+				bMovePositive := TRUE;
+				bMoveNegative := FALSE;
+				rSpindlePositionDeg := LREAL_TO_REAL(fbActualPosRotary.Position * 180.0 / PI);
+				o_rSpindlePositionDeg := rSpindlePositionDeg - 360.0 * REAL_TO_LREAL(TO_INT(rSpindlePositionDeg / 360.0));
+				IF o_rSpindlePositionDeg < 0.0 THEN
+					o_rSpindlePositionDeg := o_rSpindlePositionDeg + 360.0;
+				END_IF
+
+
+		 		o_rGuidePositionMm:=LREAL_TO_REAL(fbActualPosLinaer.Position);
+				IF fbActualPosLinaer.Position > 999.0 THEN
+					bGearIn := FALSE; 
+					IF i_rTapeWidthMm>=0 THEN
+						rCurrentRadius := SQRT( (rConsumedLengthMm / (PI * i_rTapeThicknessMm)) + (i_rCoreRadiusMm * i_rCoreRadiusMm) );
+					ELSE
+						rCurrentRadius := rCurrentRadius + i_rTapeThicknessMm;
+					END_IF 
+					state := E_WrapMode.WrapMovingBackwards;
+				END_IF
+		
+				fbMoveRight.Velocity := vMove;
+				fbMoveLeft.Velocity := vMove;
+			END_IF 
+		
+	
+	E_WrapMode.WrapMovingBackwards:
+			o_sMessage:='Winding process in progress. Please wait until completion';
+			fbPowerLinear.Enable := TRUE;
+			fbPowerRotational.Enable := TRUE;
+			IF bEstop OR i_bLeftSwich  THEN
+				state:=E_WrapMode.WrapError;
+			ELSIF bStop  THEN
+				state:=E_WrapMode.WrapStopped;
+			END_IF
+		
+			IF (rCurrentRadius + i_rTapeThicknessMm) >= i_rMaxRadiusMm or (rConsumedLengthMm>=i_rMaterialLengthMm) THEN
+				o_sMessage := 'Materijalot e zavrsen!';
+				bMovePositive := FALSE;
+				bMoveNegative := FALSE;
+				tonTimeOutTimer.PT := T#5S;
+				tonTimeOutTimer.IN := TRUE;
+		
+				IF tonTimeOutTimer.Q THEN
+					tonTimeOutTimer.IN := FALSE;
+					state := E_WrapMode.WrapReset; 
+				END_IF
+		
+			ELSE
+				IF NOT fbGearIn.Active THEN
+					IF i_bActivateWrapByAngle THEN
+						rAngleRads := i_rWrapAngleDeg * 3.14159265359 / 180.0;
+						fbGearIn.RatioNumerator := 1;
+						fbGearIn.RatioDenominator := REAL_TO_UINT(rCurrentRadius * TAN(rAngleRads));
+						IF fbGearIn.RatioDenominator = 0 THEN fbGearIn.RatioDenominator := 1; END_IF
+;
+					END_IF
+					bGearIn := TRUE;
+				END_IF
+				
+				deltaAngleRad := fbActualPosRotary.Position - rPrevAngleRad;
+				rStepOverlap :=LREAL_TO_REAL(rCurrentRadius * TAN(rAngleRads));
+				rConsumedLengthMm := ABS(rConsumedLengthMm + rStepOverlap * (deltaAngleRad / (2*PI)));
+				rPrevAngleRad := fbActualPosRotary.Position;
+		
+				 IF fbActualPosLinaer.Position >= 850.0 AND fbActualPosLinaer.Position <= 1000.0 THEN
+					vMove := vMin + ((fbActualPosLinaer.Position - 850.0) / 150.0) * (vMax - vMin);
+				ELSIF fbActualPosLinaer.Position >= 0.0 AND fbActualPosLinaer.Position <= 150.0 THEN
+					vMove := vMin + ((150.0 - fbActualPosLinaer.Position) / 150.0) * (vMax - vMin);
+				ELSE
+					vMove := vMax;
+				END_IF
+
+				bMovePositive := FALSE;
+				bMoveNegative := TRUE;
+				rSpindlePositionDeg := LREAL_TO_REAL(fbActualPosRotary.Position * 180.0 / PI);
+				o_rSpindlePositionDeg := LREAL_TO_REAL(rSpindlePositionDeg - 360.0 * REAL_TO_LREAL
+										(TO_INT(rSpindlePositionDeg / 360.0)));
+				IF o_rSpindlePositionDeg < 0.0 THEN
+					o_rSpindlePositionDeg := o_rSpindlePositionDeg + 360.0;
+				END_IF
+		 		o_rGuidePositionMm:=LREAL_TO_REAL(fbActualPosLinaer.Position);
+				IF fbActualPosLinaer.Position < 1 THEN
+					bGearIn := FALSE; 
+					IF i_rTapeWidthMm>=0 THEN
+						rCurrentRadius := SQRT( (rConsumedLengthMm / (PI * i_rTapeThicknessMm)) + (i_rCoreRadiusMm * i_rCoreRadiusMm) );
+					ELSE
+						rCurrentRadius := rCurrentRadius + i_rTapeThicknessMm;
+					END_IF
+					state := E_WrapMode.WrapMovingForward;
+				END_IF
+		
+				fbMoveRight.Velocity := vMove;
+				fbMoveLeft.Velocity := vMove;
+		
+			END_IF  
+	
+
+	E_WrapMode.WrapReset:
+		bMovePositive := FALSE;
+		bGearIn := FALSE;             
+		fbGearOut.Execute := TRUE;      
+		fbMoveLeft.Position := 0.0;
+		fbMoveLeft.Velocity := 50.0;
+		fbMoveRot.Position:=0.00;
+		fbMoveRot.Velocity:=50;
+		bMoveNegative := TRUE;
+		fbMoveRot.Execute:=TRUE;
+		IF fbMoveLeft.Done AND fbMoveRot.Done THEN
+			fbMoveLeft.Execute := FALSE;
+			rPrevAngleRad := 0.0;
+			rConsumedLengthMm := 0.0; 
+			rCurrentRadius := i_rCoreRadiusMm;
+			state := E_WrapMode.WrapIdle; 
+		END_IF
+
+
+	E_WrapMode.WrapStopped:
+		fbPowerLinear.Enable := TRUE;
+		fbPowerRotational.Enable := TRUE;
+		o_sActiveWrapModeMessage := 'STOP: Machine paused by user';
+		fbMoveRight.Execute := FALSE;
+		fbMoveLeft.Execute  := FALSE;
+		bMovePositive := FALSE;
+		bMoveNegative := FALSE;
+		fbStop.Execute := TRUE;
+		fbStop.Deceleration := 20;
+		o_bLightStopped := TRUE;   
+		IF bResetbtn THEN
+			fbEstop.Execute := FALSE;
+			fbStop.Execute  := FALSE;
+			o_bLightError   := FALSE;
+			o_bLightStopped := FALSE;
+			bResetbtn := FALSE;
+			bEstop := FALSE;
+			bStop := FALSE;
+			//bNeedReset := FALSE;
+			tonTimeOutTimer.IN := FALSE;
+			IF PrevState = E_WrapMode.WrapMovingForward THEN
+				bMovePositive := TRUE;
+				fbMoveRight.Execute := TRUE;   
+			ELSIF PrevState = E_WrapMode.WrapMovingBackwards THEN
+				bMoveNegative := TRUE;
+				fbMoveLeft.Execute := TRUE;   
+			END_IF
+	
+			state := PrevState;
+		END_IF
+
+
+	E_WrapMode.WrapError:
+		o_sActiveWrapModeMessage := 'E-STOP: Immediate stop!';
+		fbMoveRight.Execute := FALSE;
+		fbMoveLeft.Execute  := FALSE;
+		bMovePositive := FALSE;
+		bMoveNegative := FALSE;
+		fbEstop.Execute := TRUE;
+		fbEstop.Deceleration := 50;
+		o_bLightError := TRUE;
+		IF i_bLeftSwich THEN
+			o_sMessage := 'Stopped due to left limit switch';
+			PrevState  := E_WrapMode.WrapMovingForward;
+		ELSIF i_bRightSwich THEN
+			o_sMessage := 'Stopped due to right limit switch';
+			PrevState  := E_WrapMode.WrapMovingBackwards;
+		END_IF
+		IF (bResetbtn AND NOT (i_bLeftSwich OR i_bRightSwich)) THEN
+			fbEstop.Execute := FALSE;
+			fbStop.Execute  := FALSE;
+			o_bLightError   := FALSE;
+			o_bLightStopped := FALSE;
+			bResetbtn := FALSE;
+			bEstop := FALSE;
+			bStop := FALSE;
+			//bNeedReset := FALSE;
+			tonTimeOutTimer.IN := FALSE;
+			IF PrevState = E_WrapMode.WrapMovingForward THEN
+				bMovePositive := TRUE;
+				fbMoveRight.Execute := TRUE;  
+			ELSIF PrevState = E_WrapMode.WrapMovingBackwards THEN
+				bMoveNegative := TRUE;
+				fbMoveLeft.Execute := TRUE;   
+			END_IF
+	
+			state := PrevState;
+		END_IF
+
+
+END_CASE
+
+
+rSpindlePositionDeg := LREAL_TO_REAL(fbActualPosRotary.Position * 360.0);
+o_rSpindlePositionDeg := LREAL_TO_REAL(LMOD(rSpindlePositionDeg, 360.0));
+IF o_rSpindlePositionDeg < 0.0 THEN
+    o_rSpindlePositionDeg := o_rSpindlePositionDeg + 360.0;
+END_IF
+
+tonTimeOutTimer();
+tonGearIntimer();
+fbPowerLinear(Axis := myAxisMaster, Enable_Positive := TRUE, Enable_Negative := TRUE);
+fbPowerRotational(Axis := myAxisSlave, Enable_Positive := TRUE, Enable_Negative := TRUE);
+fbMoveRight(Axis := myAxisMaster, Execute := bMovePositive, Position := 1000, Velocity := fbMoveRight.Velocity);
+fbMoveLeft(Axis := myAxisMaster, Execute := bMoveNegative, Position := 0, Velocity := fbMoveLeft.Velocity);
+fbEstop(Axis := myAxisMaster, Execute := bEstop, Deceleration := 70);
+fbStop(Axis := myAxisMaster, Execute := (state = E_WrapMode.WrapStopped), Deceleration := 50);
+fbActualPosLinaer(Axis := myAxisMaster, Enable := TRUE);
+fbActualPosRotary(Axis := myAxisSlave, Enable := TRUE);
+fbGearIn(Master := myAxisMaster, Slave := myAxisSlave, Execute := bGearIn);
+fbGearOut(Slave := myAxisSlave, Execute := NOT bGearIn);
+fbMoveRot(Axis:=myAxisSlave);
